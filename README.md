@@ -1,0 +1,2 @@
+# distributo
+Distributed thing
