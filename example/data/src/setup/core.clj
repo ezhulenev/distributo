@@ -40,9 +40,7 @@
     (merge
       ((rebase 0) sites)
       ((rebase num-sites) contexts)
-      ((rebase (+ num-sites num-contexts)) zip-codes))
-    )
-  )
+      ((rebase (+ num-sites num-contexts)) zip-codes))))
 
 (defn gen-instance
   [resp n pred]
