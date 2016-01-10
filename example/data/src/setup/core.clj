@@ -4,6 +4,8 @@
 
 (def models (map #(str "model-" %) (range 1 10)))
 
+(def features [:sites :contexts :zip-codes])
+
 (def negative-predictors {:sites     ["bbc.com", "cnn.com", "news.com", "yahoo.com", "fox.com", "wsj.com"]
                           :contexts  ["news", "politics", "sport", "finance"]
                           :zip-codes ["10001", "11201", "10016", "10015"]})
@@ -12,49 +14,40 @@
                           :contexts  ["technology", "music", "start-ups", "sport", "health"]
                           :zip-codes ["94101", "94122", "94002", "94006"]})
 
-(defn index-predictors
-  [neg pos]
+(defn index-features
+  "Compute predictors to index mapping for given features"
+  [features neg pos]
   (let [flip (fn [idx itm] [itm idx])
-        all-predictors #(concat (%1 neg) (%1 pos))
-        indexed #(into {} (map-indexed flip (set (all-predictors %1))))]
-    {:sites     (indexed :sites)
-     :contexts  (indexed :contexts)
-     :zip-codes (indexed :zip-codes)}))
+        predictors #(set (concat (%1 neg) (%1 pos)))
+        index #(into {} (map-indexed flip (predictors %1)))]
+    (into {} (zipmap features (map index features)))))
 
-(defn- feauturize-predictors
-  [idx p]
-  (into (sorted-map-by <) (for [[k v] p
-                                :let [e (find idx k)]
+(defn- featurize-predictors
+  "Compute featurization for single feature"
+  [index predictors]
+  (into (sorted-map-by <) (for [[k v] predictors
+                                :let [e (find index k)]
                                 :when e]
-                            [(idx k) v])))
+                            [(index k) v])))
 
 (defn featurize
-  [idx p]
-  (let [extract #(feauturize-predictors (%1 idx) (%1 p))
-        num-sites (count (:sites idx))
-        num-contexts (count (:contexts idx))
-        sites (extract :sites)
-        contexts (extract :contexts)
-        zip-codes (extract :zip-codes)
-        rebase (fn [base] #(into (sorted-map-by <)
-                                 (for [[k v] %1] [(+ base k) v])
-                                 ))]
-    (merge
-      ((rebase 0) sites)
-      ((rebase num-sites) contexts)
-      ((rebase (+ num-sites num-contexts)) zip-codes))))
+  [features index instance]
+  (let [base (zipmap features (cons 0 (reductions + (map #(count (%1 index)) features))))
+        rebase (fn [feature] #(into (sorted-map-by <)
+                                    (for [[k v] %1] [(+ (feature base) k) v])
+                                    ))]
+    (zipmap features
+            (map (fn [ft] ((rebase ft) (featurize-predictors (ft index) (ft instance))))
+                 features))))
 
 (defn gen-instance
-  [resp n pred]
-  (let [take-rand (fn [n kw] (take (inc (rand-int n)) (shuffle (kw pred))))
-        sites (take-rand 3 :sites)
-        contexts (take-rand 3 :contexts)
-        zip-codes (take-rand 2 :zip-codes)
+  [features pred n resp]
+  (let [rand-pred (fn [n kw] (take (inc (rand-int n)) (shuffle (kw pred))))
         rand-map #(into {} (map (fn [k] [k (inc (rand-int n))]) %1))]
-    {:response  resp
-     :sites     (rand-map sites)
-     :contexts  (rand-map contexts)
-     :zip-codes (rand-map zip-codes)}))
+    (merge {:response resp}
+           (zipmap features (->> features
+                                 (map #(rand-pred 3 %))
+                                 (map rand-map))))))
 
 (defmacro doseq-indexed
   "loops over a set of values, binding index-sym to the 0-based index of each value"
@@ -67,16 +60,20 @@
           (recur (next vals#) (inc ~index-sym)))
         nil))))
 
-(defn write-instances [indexed model instances]
-  (let [out-path (str "output/" model)]
-    (println (str "Writing instances to files. model = " model))
+(defn- select-values [map ks]
+  (reduce #(conj %1 (map %2)) [] ks))
+
+(defn write-instances [features indexed name instances]
+  (let [out-path (str "output/" name)
+        merge-features (fn [m] (apply merge (select-values m features)))]
+    (println (str "Writing instances to files. Model name = " name))
     (fs/mkdirs out-path)
     (with-open [predictors-o (clojure.java.io/writer (str out-path "/predictors.csv"))
                 response-o (clojure.java.io/writer (str out-path "/response.csv"))]
       (binding [*out* predictors-o]
         (println "row,column,value")
         (doseq-indexed [idx instance instances]
-                       (doseq [[col val] (featurize indexed instance)]
+                       (doseq [[col val] (merge-features (featurize features indexed instance))]
                          (println (str idx "," col "," val)))))
       (binding [*out* response-o]
         (println "row,response")
@@ -86,11 +83,11 @@
 (defn generate-input
   [num-neg num-pos]
   (println (str "Generate model input: num-neg = " num-neg "; num-pos = " num-pos))
-  (let [indexed (index-predictors negative-predictors positive-predictors)]
+  (let [indexed (index-features features negative-predictors positive-predictors)]
     (doseq [model models]
-      (let [negs (repeat num-neg (gen-instance 0.0 10 negative-predictors))
-            poss (repeat num-pos (gen-instance 1.0 10 positive-predictors))]
-        (write-instances indexed model (shuffle (concat negs poss)))))))
+      (let [negs (repeat num-neg (gen-instance features negative-predictors 10 0.0))
+            poss (repeat num-pos (gen-instance features positive-predictors 10 1.0))]
+        (write-instances features indexed model (shuffle (concat negs poss)))))))
 
 (def cli-options
   [["-g" "--generate" "Generate model input"]
