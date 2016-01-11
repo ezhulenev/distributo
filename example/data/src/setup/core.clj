@@ -22,7 +22,7 @@
         index #(into {} (map-indexed flip (predictors %1)))]
     (into {} (zipmap features (map index features)))))
 
-(defn- featurize-predictors
+(defn featurize-predictors
   "Compute featurization for single feature"
   [index predictors]
   (into (sorted-map-by <) (for [[k v] predictors
@@ -30,9 +30,22 @@
                                 :when e]
                             [(index k) v])))
 
+(defn base
+  [features index]
+  (zipmap features (cons 0 (reductions + (map #(count (%1 index)) features)))))
+
+(defn col-names
+  [features index]
+  (let [base (base features index)]
+    (into (sorted-map)
+          (->> features
+               (mapcat (fn [ft] (->> (ft index)
+                                     (map (fn [[val idx]]
+                                            [(+ (base ft) idx) (str (name ft) ":" val)])))))))))
+
 (defn featurize
   [features index instance]
-  (let [base (zipmap features (cons 0 (reductions + (map #(count (%1 index)) features))))
+  (let [base (base features index)
         rebase (fn [feature] #(into (sorted-map-by <)
                                     (for [[k v] %1] [(+ (feature base) k) v])
                                     ))]
@@ -60,7 +73,7 @@
           (recur (next vals#) (inc ~index-sym)))
         nil))))
 
-(defn- select-values [map ks]
+(defn select-values [map ks]
   (reduce #(conj %1 (map %2)) [] ks))
 
 (defn write-instances [features indexed name instances]
@@ -68,8 +81,13 @@
         merge-features (fn [m] (apply merge (select-values m features)))]
     (println (str "Writing instances to files. Model name = " name))
     (fs/mkdirs out-path)
-    (with-open [predictors-o (clojure.java.io/writer (str out-path "/predictors.csv"))
+    (with-open [col-names-o (clojure.java.io/writer (str out-path "/columns.csv"))
+                predictors-o (clojure.java.io/writer (str out-path "/predictors.csv"))
                 response-o (clojure.java.io/writer (str out-path "/response.csv"))]
+      (binding [*out* col-names-o]
+        (println "column,name")
+        (doseq [[col val] (col-names features indexed)]
+          (println (str col "," val))))
       (binding [*out* predictors-o]
         (println "row,column,value")
         (doseq-indexed [idx instance instances]
