@@ -87,7 +87,7 @@
       (binding [*out* col-names-o]
         (println "column,name")
         (doseq [[col val] (col-names features indexed)]
-          (println (str col "," val))))
+          (println (str (inc col) "," val))))
       (binding [*out* predictors-o]
         (println "row,column,value")
         (doseq-indexed [idx instance instances]
