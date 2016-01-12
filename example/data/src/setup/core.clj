@@ -47,8 +47,7 @@
   [features index instance]
   (let [base (base features index)
         rebase (fn [feature] #(into (sorted-map-by <)
-                                    (for [[k v] %1] [(+ (feature base) k) v])
-                                    ))]
+                                    (for [[k v] %1] [(+ (feature base) k) v])))]
     (zipmap features
             (map (fn [ft] ((rebase ft) (featurize-predictors (ft index) (ft instance))))
                  features))))
