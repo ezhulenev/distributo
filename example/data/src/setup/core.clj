@@ -92,7 +92,7 @@
         (println "row,column,value")
         (doseq-indexed [idx instance instances]
                        (doseq [[col val] (merge-features (featurize features indexed instance))]
-                         (println (str idx "," col "," val)))))
+                         (println (str (inc idx) "," (inc col) "," val)))))
       (binding [*out* response-o]
         (println "row,response")
         (doseq-indexed [idx instance instances]
@@ -103,8 +103,8 @@
   (println (str "Generate model input: num-neg = " num-neg "; num-pos = " num-pos))
   (let [indexed (index-features features negative-predictors positive-predictors)]
     (doseq [model models]
-      (let [negs (repeat num-neg (gen-instance features negative-predictors 10 0.0))
-            poss (repeat num-pos (gen-instance features positive-predictors 10 1.0))]
+      (let [negs (repeatedly num-neg #(gen-instance features negative-predictors 10 0.0))
+            poss (repeatedly num-pos #(gen-instance features positive-predictors 10 1.0))]
         (write-instances features indexed model (shuffle (concat negs poss)))))))
 
 (def cli-options
