@@ -1,4 +1,4 @@
-FROM ubuntu:15.10
+FROM r-base:latest
 
 MAINTAINER Eugene Zhulenev
 
@@ -18,21 +18,23 @@ RUN apt-get install -y \
 RUN pip install awscli
 
 # - - - - - - - - - - - - - - - - - - - - - - - - #
-# - -    Install R                            - - #
+# - -    Install R Libraries                  - - #
 # - - - - - - - - - - - - - - - - - - - - - - - - #
 
-RUN apt-get install -y r-base
-COPY install/* /install/
+COPY /install /install
 RUN R CMD BATCH /install/r-libraries.R /install/r-libraries.out
 
 # - - - - - - - - - - - - - - - - - - - - - - - - #
 # - -    Model files                          - - #
 # - - - - - - - - - - - - - - - - - - - - - - - - #
 
-COPY model/* /model/
+COPY /model /model
 
 # - - - - - - - - - - - - - - - - - - - - - - - - #
 # - -    Interface                            - - #
 # - - - - - - - - - - - - - - - - - - - - - - - - #
 
-# ENTRYPOINT ["Rscript", "/model/run-modeling.R"]
+COPY /bin /bin
+RUN chmod +x /bin/run-modeling.sh
+
+ENTRYPOINT ["/bin/run-modeling.sh"]

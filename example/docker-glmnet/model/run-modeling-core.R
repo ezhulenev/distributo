@@ -32,6 +32,7 @@ load.dataset <- function(
   response.path,
   columns.path
 ) {
+  require(methods)
   require(Matrix)
 
   # row, column, value
