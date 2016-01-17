@@ -4,8 +4,7 @@
             [clj-time.core :as t]
             [clj-time.periodic :as periodic]
             [chime :refer [chime-ch]])
-  (:import (clojure.lang PersistentQueue)
-           (java.io Writer)))
+  (:import (clojure.lang PersistentQueue)))
 
 (defn merge-common-with [f a b]
   (persistent!
@@ -32,7 +31,7 @@
   "Core.async channel production events every n seconds"
   [^long n]
   (let [schedule (periodic/periodic-seq (t/now) (-> n t/seconds))]
-    (chime-ch schedule {:ch (async/chan (async/sliding-buffer 1))})))
+    (chime-ch schedule)))
 
 (defn nil-map [keys]
   (into {} (map (fn [k] [k nil]) keys)))

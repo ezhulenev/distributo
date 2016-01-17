@@ -62,14 +62,6 @@
       ;; Should not be here
       :else (throw (IllegalStateException. "Cluster is not found nor failed")))))
 
-(defn cluster-states
-  "Constructs core.async channel with cluster states"
-  [^AmazonECSClient client metronome name]
-  (let [states (chan)
-        xf (map (fn [_] (describe-cluster client name)))]
-    (async/pipeline 1 states xf metronome)
-    states))
-
 (defn cluster-transition
   "Compute cluster state transition based on diff"
   [a b]
@@ -77,7 +69,15 @@
   (let [[l r _] (diff a b)]
     (merge {:name (:name a)} (transition a b))))
 
-(defn cluster-transitions
+(defn cluster-states-chan
+  "Constructs core.async channel with cluster states"
+  [^AmazonECSClient client metronome name]
+  (let [states (chan)
+        xf (map (fn [_] (describe-cluster client name)))]
+    (async/pipeline 1 states xf metronome)
+    states))
+
+(defn cluster-transitions-chan
   "Constructs core.async channel with cluster state transitions"
   [^AmazonECSClient client metronome name]
   (let [transitions (chan)

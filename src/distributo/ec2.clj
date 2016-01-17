@@ -86,14 +86,6 @@
                        (.getSpotInstanceRequests)
                        (map spot-instances-request->map))))))
 
-(defn spot-requests
-  "Constructs core.async channel with spot requests states"
-  [^AmazonEC2Client client metronome]
-  (let [requests (chan)
-        xf (map (fn [_] (describe-spot-requests client)))]
-    (async/pipeline 1 requests xf metronome)
-    requests))
-
 (defn spot-requests-transition
   "Cumpute transition map between two spot requests states"
   [a b]
@@ -101,7 +93,15 @@
         nil-map (nil-map all-reqs)]
     (merge-with transition (merge nil-map a) (merge nil-map b))))
 
-(defn spot-requests-transitions
+(defn spot-requests-chan
+  "Constructs core.async channel with spot requests states"
+  [^AmazonEC2Client client metronome]
+  (let [requests (chan)
+        xf (map (fn [_] (describe-spot-requests client)))]
+    (async/pipeline 1 requests xf metronome)
+    requests))
+
+(defn spot-requests-transitions-chan
   "Constructs core.async channel with spot requests transitions"
   [^AmazonEC2Client client metronome]
   (let [transitions (chan)
@@ -113,8 +113,3 @@
              (map (fn [[a b]] (spot-requests-transition a b))))]
     (async/pipeline 1 transitions xf metronome)
     transitions))
-
-;(async/go-loop []
-;  (when-let [x (async/<! s)]
-;    (prn x))
-;  (recur))
