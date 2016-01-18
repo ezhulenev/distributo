@@ -5,7 +5,7 @@
             [clojure.data :refer [diff]]
             [distributo.util :refer :all])
   (:import (com.amazonaws.services.ecs AmazonECSClient)
-           (com.amazonaws.services.ecs.model CreateClusterRequest DescribeClustersRequest DeleteClusterRequest Cluster DescribeTaskDefinitionRequest TaskDefinition ContainerDefinition RegisterTaskDefinitionRequest)
+           (com.amazonaws.services.ecs.model CreateClusterRequest DescribeClustersRequest DeleteClusterRequest Cluster DescribeTaskDefinitionRequest TaskDefinition ContainerDefinition RegisterTaskDefinitionRequest ListContainerInstancesRequest DescribeContainerInstancesRequest ContainerInstance Resource Failure)
            (com.amazonaws.auth AWSCredentialsProvider)
            (com.amazonaws.regions Region Regions)))
 
@@ -18,7 +18,7 @@
 (defn cluster->map
   [^Cluster cluster]
   (let [name (-> cluster (.getClusterName))
-        status (-> cluster (.getStatus) (.toLowerCase) (keyword))
+        status (-> cluster (.getStatus) (keyword))
         instances (-> cluster (.getRegisteredContainerInstancesCount))
         running-tasks (-> cluster (.getRunningTasksCount))
         pending-tasks (-> cluster (.getPendingTasksCount))
@@ -50,8 +50,44 @@
         container-definitions (-> task-definition (.getContainerDefinitions))]
     {:family                family
      :revision              revision
-     :status                (keyword (.toLowerCase status))
+     :status                (keyword status)
      :container-definitions (mapv container-definition->map container-definitions)}))
+
+(defn failure->map
+  [^Failure failure]
+  (let [arn (-> failure (.getArn))
+        reason (-> failure (.getReason))]
+    {:arn    arn
+     :reason reason}))
+
+(defn resource->map
+  [^Resource resource]
+  (let [name (-> resource (.getName) (keyword))
+        type (-> resource (.getType) (keyword))
+        value (condp = type
+                :INTEGER (-> resource (.getIntegerValue))
+                :DOUBLE (-> resource (.getDoubleValue))
+                :LONG (-> resource (.getLongValue))
+                :STRINGSET (-> resource (.getStringSetValue) (vec)))]
+    {:name name
+     :type type
+     :value value
+     }))
+
+(defn container-instance->map
+  [^ContainerInstance container-instance]
+  (let [container-instance-arn (-> container-instance (.getContainerInstanceArn))
+        ec2-instance-id (-> container-instance (.getEc2InstanceId))
+        registered-resources (->> container-instance
+                                  (.getRegisteredResources)
+                                  (mapv resource->map))
+        remaining-resources (->> container-instance
+                                 (.getRemainingResources)
+                                 (mapv resource->map))]
+    {:container-instance-arn container-instance-arn
+     :ec2-instance-id        ec2-instance-id
+     :registered-resources   registered-resources
+     :remaining-resources    remaining-resources}))
 
 ;; Construct new AWS SDK objects
 
@@ -66,27 +102,30 @@
 
 (defn create-cluster
   [^AmazonECSClient client cluster]
-  (let [ec2-create-request (-> (CreateClusterRequest.)
+  (log/debug "Create cluster:" cluster)
+  (let [ecs-create-request (-> (CreateClusterRequest.)
                                (.withClusterName cluster))]
     (-> client
-        (.createCluster ec2-create-request)
+        (.createCluster ecs-create-request)
         (.getCluster)
         (cluster->map))))
 
 (defn delete-cluster
   [^AmazonECSClient client cluster]
-  (let [ec2-delete-request (-> (DeleteClusterRequest.)
+  (log/debug "Delete cluster:" cluster)
+  (let [ecs-delete-request (-> (DeleteClusterRequest.)
                                (.withCluster cluster))]
     (-> client
-        (.deleteCluster ec2-delete-request)
+        (.deleteCluster ecs-delete-request)
         (.getCluster)
         (cluster->map))))
 
 (defn describe-cluster
-  [^AmazonECSClient client name]
-  (let [ec2-describe-request (-> (DescribeClustersRequest.)
-                                 (.withClusters [name]))
-        result (-> client (.describeClusters ec2-describe-request))
+  [^AmazonECSClient client cluster]
+  (log/debug "Describe cluster:" cluster)
+  (let [ecs-describe-request (-> (DescribeClustersRequest.)
+                                 (.withClusters [cluster]))
+        result (-> client (.describeClusters ecs-describe-request))
         cluster (-> result (.getClusters) (seq) (first))
         failure (-> result (.getFailures) (seq) (first))]
     (cond
@@ -98,35 +137,62 @@
 
 (defn list-task-definition-families
   [^AmazonECSClient client]
-  (-> client
-      (.listTaskDefinitionFamilies)
-      (.getFamilies)))
+  (log/debug "List task definition families")
+  (let [ecs-response (-> client (.listTaskDefinitionFamilies))]
+    ;; TODO: Handle next token value
+    (when (-> ecs-response (.getNextToken))
+      (throw (RuntimeException. "List task defintiion families response is multi paged")))
+    (-> ecs-response (.getFamilies))))
 
 (defn describe-task-definition
   [^AmazonECSClient client family]
-  (let [ec2-describe-request (-> (DescribeTaskDefinitionRequest.)
-                                 (.withTaskDefinition family))]
+  (log/debug "Describe task definition family:" family)
+  (let [ecs-request (-> (DescribeTaskDefinitionRequest.)
+                        (.withTaskDefinition family))
+        ecs-response (-> client
+                         (.describeTaskDefinition ecs-request))]
     (task-definition->map
-      (-> client
-          (.describeTaskDefinition ec2-describe-request)
-          (.getTaskDefinition)))))
+      (-> ecs-response (.getTaskDefinition)))))
 
 (defn register-task-definition
   [^AmazonECSClient client family opts]
   (let [{:keys [image cpu memory]} opts
-        ec2-container-def (-> (ContainerDefinition.)
+        ecs-container-def (-> (ContainerDefinition.)
                               (.withImage image)
                               (.withCpu (int cpu))
                               (.withMemory (int memory))
                               (.withName default-container-name))
-        ec2-register-request (-> (RegisterTaskDefinitionRequest.)
+        ecs-request (-> (RegisterTaskDefinitionRequest.)
                                  (.withFamily family)
-                                 (.withContainerDefinitions [ec2-container-def]))]
+                                 (.withContainerDefinitions [ecs-container-def]))]
     (log/debug "Register task definition. Family:" family "CPU:" cpu "Mem:" memory)
     (task-definition->map
       (-> client
-          (.registerTaskDefinition ec2-register-request)
+          (.registerTaskDefinition ecs-request)
           (.getTaskDefinition)))))
+
+(defn list-container-instances
+  [^AmazonECSClient client cluster]
+  (log/debug "List container instances in cluster:" cluster)
+  (let [ecs-request (-> (ListContainerInstancesRequest.)
+                        (.withCluster cluster))
+        ecs-response (-> client (.listContainerInstances ecs-request))]
+    ;; TODO: Handle next token value
+    (when (-> ecs-response (.getNextToken))
+      (throw (RuntimeException. "List container instances response is multi paged")))
+    (-> ecs-response (.getContainerInstanceArns))))
+
+(defn describe-container-instances
+  [^AmazonECSClient client cluster instances]
+  (log/debug "Describe container instances in cluster:" cluster "Instances:" instances)
+  (let [ecs-describe-request (-> (DescribeContainerInstancesRequest.)
+                                 (.withCluster cluster)
+                                 (.withContainerInstances instances))
+        ecs-response (-> client (.describeContainerInstances ecs-describe-request))
+        container-instances (-> ecs-response (.getContainerInstances))
+        failures (-> ecs-response (.getFailures))]
+    {:container-instances (mapv container-instance->map container-instances)
+     :failures            (mapv failure->map failures)}))
 
 ;; Combinators on top of AWS API
 

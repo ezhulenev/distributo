@@ -4,7 +4,7 @@
             [clojure.string :as str]
             [base64-clj.core :as base64]
             [distributo.util :refer :all])
-  (:import (com.amazonaws.services.ec2.model LaunchSpecification IamInstanceProfileSpecification RequestSpotInstancesRequest SpotInstanceRequest CreateTagsRequest Tag DescribeSpotInstanceRequestsRequest Filter SpotInstanceType)
+  (:import (com.amazonaws.services.ec2.model LaunchSpecification IamInstanceProfileSpecification RequestSpotInstancesRequest SpotInstanceRequest CreateTagsRequest Tag DescribeSpotInstanceRequestsRequest Filter SpotInstanceType CancelSpotInstanceRequestsRequest CancelledSpotInstanceRequest SpotPlacement)
            (com.amazonaws.services.ec2 AmazonEC2Client)
            (com.amazonaws.auth AWSCredentialsProvider)
            (com.amazonaws.regions Region Regions)))
@@ -24,11 +24,16 @@
           :ap-southeast-1 "ami-c78f43a4"
           :ap-southeast-2 "ami-43547120"})
 
-(def launch-specification-defaults {:region         :us-east-1
-                                    :instance-type  :m4.large
-                                    :security-group "default"
-                                    :iam-role       "ecsInstanceRole"
-                                    :key-name       "default"})
+(def default-launch-specification {:region            :us-east-1
+                                   :availability-zone :us-east-1d ;; it's cheapest one in us-east-1
+                                   :instance-type     :m4.large
+                                   :security-group    "default"
+                                   :iam-role          "ecsInstanceRole"
+                                   :key-name          "default"})
+
+(def default-spot-instance-request {:spot-price 0.02
+                                    :count 1
+                                    :launch-specification default-launch-specification})
 
 ;; Mapping from AWS SDK objects into clojure data structures
 
@@ -39,14 +44,26 @@
         type (-> req (.getType) (keyword))
         state (-> req (.getState) (keyword))
         status (-> req (.getStatus) (.getCode) (keyword))
+        fault (-> req (.getFault))
+        fault-code (when fault (-> fault (.getCode)))
+        instance-type (-> req (.getLaunchSpecification) (.getInstanceType) (keyword))
         instance-id (-> req (.getInstanceId) (keyword))]
+    (remove-nil-values
+      {:spot-instance-request-id spot-instance-request-id
+       :spot-price               spot-price
+       :type                     type
+       :state                    state
+       :status                   status
+       :fault                    fault-code
+       :instance-type            instance-type
+       :instance-id              instance-id})))
+
+(defn cancelled-spot-instance-request->map
+  [^CancelledSpotInstanceRequest req]
+  (let [spot-instance-request-id (-> req (.getSpotInstanceRequestId))
+        state (-> req (.getState) (keyword))]
     {:spot-instance-request-id spot-instance-request-id
-     :spot-price               spot-price
-     :type                     type
-     :state                    state
-     :status                   status
-     :instance-id              instance-id
-     }))
+     :state                    state}))
 
 ;; Construct new AWS SDK objects
 
@@ -60,7 +77,12 @@
 (defn new-launch-specification
   ([cluster] (new-launch-specification cluster {}))
   ([cluster opts]
-   (let [{:keys [region instance-type security-group iam-role key-name]} (merge launch-specification-defaults opts)
+   (let [{:keys [region
+                 availability-zone
+                 instance-type
+                 security-group
+                 iam-role
+                 key-name]} (merge default-launch-specification opts)
          user-data (str/join ["#!/bin/bash" "\n"
                               "echo ECS_CLUSTER=" cluster " >> /etc/ecs/ecs.config"])]
      (-> (LaunchSpecification.)
@@ -69,6 +91,8 @@
          (.withSecurityGroups [security-group])
          (.withKeyName key-name)
          (.withUserData (base64/encode user-data))
+         (.withPlacement (-> (SpotPlacement.)
+                             (.withAvailabilityZone availability-zone)))
          (.withIamInstanceProfile (-> (IamInstanceProfileSpecification.)
                                       (.withName iam-role)))))))
 
@@ -88,32 +112,56 @@
   [^AmazonEC2Client client cluster request]
   (log/debug "Request spot instance. Cluster:" cluster "Request:" request)
   (let [ec2-spot-request (new-spot-instances-request cluster request)]
-    (map spot-instances-request->map
-         (-> client
-             (.requestSpotInstances ec2-spot-request)
-             (.getSpotInstanceRequests)))))
+    (mapv spot-instances-request->map
+          (-> client
+              (.requestSpotInstances ec2-spot-request)
+              (.getSpotInstanceRequests)))))
 
 (defn tag-spot-instance-requests
-  [^AmazonEC2Client client cluster requests]
+  [^AmazonEC2Client client cluster spot-requests]
   (log/debug "Tag spot requests with cluster name:" cluster
-             "Requests:" (mapv :spot-instance-request-id requests))
+             "Requests:" (mapv :spot-instance-request-id spot-requests))
   (let [tag (Tag. cluster-tag-name cluster)
         ec2-tag-request (-> (CreateTagsRequest.)
-                            (.withResources (map :spot-instance-request-id requests))
+                            (.withResources (map :spot-instance-request-id spot-requests))
                             (.withTags [tag]))]
     (-> client (.createTags ec2-tag-request))))
 
+(defn request-and-tag-spot-instances
+  [^AmazonEC2Client client cluster request]
+  (let [spot-requests (request-spot-instances client cluster request)]
+    (tag-spot-instance-requests client cluster spot-requests)
+    spot-requests))
+
 (defn describe-spot-requests
   [^AmazonEC2Client client cluster]
+  (log/debug "Describe spot requests in cluster:" cluster)
   (let [tag-filter (-> (Filter.)
                        (.withName (str "tag:" cluster-tag-name))
                        (.withValues [cluster]))
         ec2-describe-request (-> (DescribeSpotInstanceRequestsRequest.)
                                  (.withFilters [tag-filter]))]
-    (map spot-instances-request->map
-         (-> client
-             (.describeSpotInstanceRequests ec2-describe-request)
-             (.getSpotInstanceRequests)))))
+    (mapv spot-instances-request->map
+          (-> client
+              (.describeSpotInstanceRequests ec2-describe-request)
+              (.getSpotInstanceRequests)))))
+
+(defn cancel-spot-requests
+  [^AmazonEC2Client client cluster spot-requests]
+  (log/debug "Cancel spot requests in cluster:" cluster
+             "Requests:" (mapv :spot-instance-request-id spot-requests))
+  (let [ec2-request (-> (CancelSpotInstanceRequestsRequest.)
+                        (.withSpotInstanceRequestIds (map :spot-instance-request-id spot-requests)))]
+    (mapv cancelled-spot-instance-request->map
+          (-> client (.cancelSpotInstanceRequests ec2-request)
+              (.getCancelledSpotInstanceRequests)))))
+
+(defn cancel-open-spot-requests
+  [^AmazonEC2Client client cluster]
+  (log/debug "Cancel open spot requests in cluster:" cluster)
+  (let [open-spot-requests (filter #(= (:state %) :open) (describe-spot-requests client cluster))]
+    (when (seq open-spot-requests)
+      (cancel-spot-requests client cluster open-spot-requests))))
 
 ;; Combinators on top of low lever AWS SDK
 

@@ -34,16 +34,20 @@
     (chime-ch schedule)))
 
 (defn nil-map [keys]
+  "Creates map with keys and nil as values"
   (into {} (map (fn [k] [k nil]) keys)))
+
+(defn remove-nil-values [m]
+  "Remove keys with nil values"
+  (into {} (remove (comp nil? second) m)))
 
 (defn transition
   "Use data.diff to compute transition map from state a to state b"
   [a b]
   (let [[l r _] (diff a b)
         all-keys (concat (keys l) (keys r))
-        nil-map (nil-map all-keys)
-        remove-nil #(into {} (remove (comp nil? second) %1))]
+        nil-map (nil-map all-keys)]
     (merge-with
-      (fn [from to] (remove-nil {:from from :to to}))
+      (fn [from to] (remove-nil-values {:from from :to to}))
       (merge nil-map l)
       (merge nil-map r))))
