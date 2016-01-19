@@ -5,7 +5,7 @@
             [clojure.data :refer [diff]]
             [distributo.util :refer :all])
   (:import (com.amazonaws.services.ecs AmazonECSClient)
-           (com.amazonaws.services.ecs.model CreateClusterRequest DescribeClustersRequest DeleteClusterRequest Cluster DescribeTaskDefinitionRequest TaskDefinition ContainerDefinition RegisterTaskDefinitionRequest ListContainerInstancesRequest DescribeContainerInstancesRequest ContainerInstance Resource Failure)
+           (com.amazonaws.services.ecs.model CreateClusterRequest DescribeClustersRequest DeleteClusterRequest Cluster DescribeTaskDefinitionRequest TaskDefinition ContainerDefinition RegisterTaskDefinitionRequest ListContainerInstancesRequest DescribeContainerInstancesRequest ContainerInstance Resource Failure StartTaskRequest TaskOverride ContainerOverride KeyValuePair Task Container DescribeTasksRequest ListTasksRequest)
            (com.amazonaws.auth AWSCredentialsProvider)
            (com.amazonaws.regions Region Regions)))
 
@@ -14,6 +14,13 @@
 (def default-container-name "default")
 
 ;; Mapping from AWS SDK objects into clojure data structures
+
+(defn failure->map
+  [^Failure failure]
+  (let [arn (-> failure (.getArn))
+        reason (-> failure (.getReason))]
+    {:arn    arn
+     :reason reason}))
 
 (defn cluster->map
   [^Cluster cluster]
@@ -47,18 +54,17 @@
   (let [family (-> task-definition (.getFamily))
         revision (-> task-definition (.getRevision))
         status (-> task-definition (.getStatus))
-        container-definitions (-> task-definition (.getContainerDefinitions))]
-    {:family                family
-     :revision              revision
-     :status                (keyword status)
-     :container-definitions (mapv container-definition->map container-definitions)}))
-
-(defn failure->map
-  [^Failure failure]
-  (let [arn (-> failure (.getArn))
-        reason (-> failure (.getReason))]
-    {:arn    arn
-     :reason reason}))
+        container-definition (first (-> task-definition (.getContainerDefinitions)))
+        environment (-> container-definition (.getEnvironment))]
+    {:family               family
+     :revision             revision
+     :status               (keyword status)
+     :container-definition (container-definition->map container-definition)
+     :environment          (into {} (map (fn [kv-pair]
+                                           (let [k (keyword (-> kv-pair (.getName)))
+                                                 v (-> kv-pair (.getValue))]
+                                             [k v]))
+                                         environment))}))
 
 (defn resource->map
   [^Resource resource]
@@ -89,6 +95,30 @@
      :registered-resources   registered-resources
      :remaining-resources    remaining-resources}))
 
+(defn container->map
+  [^Container container]
+  (let [name (-> container (.getName))
+        last-status (-> container (.getLastStatus))
+        exit-code (-> container (.getExitCode))]
+    {:name        name
+     :last-status (keyword last-status)
+     :exit-code   exit-code}))
+
+(defn task->map
+  [^Task task]
+  (let [task-arn (-> task (.getTaskArn))
+        container-instance-arn (-> task (.getContainerInstanceArn))
+        container (-> task (.getContainers) (first))
+        command (-> task (.getOverrides) (.getContainerOverrides) (first) (.getCommand))
+        last-status (-> task (.getLastStatus))
+        desired-status (-> task (.getDesiredStatus))]
+    {:task-arn task-arn
+     :container-instance-arn container-instance-arn
+     :container (container->map container)
+     :command (vec command)
+     :last-status (keyword last-status)
+     :desired-status (keyword desired-status)}))
+
 ;; Construct new AWS SDK objects
 
 (defn new-client
@@ -108,7 +138,7 @@
     (-> client
         (.createCluster ecs-create-request)
         (.getCluster)
-        (cluster->map))))
+        (.getClusterArn))))
 
 (defn delete-cluster
   [^AmazonECSClient client cluster]
@@ -118,7 +148,7 @@
     (-> client
         (.deleteCluster ecs-delete-request)
         (.getCluster)
-        (cluster->map))))
+        (.getClusterArn))))
 
 (defn describe-cluster
   [^AmazonECSClient client cluster]
@@ -134,7 +164,6 @@
       ;; Should not be here
       :else (throw (IllegalStateException. "Cluster is not found nor failed")))))
 
-
 (defn list-task-definition-families
   [^AmazonECSClient client]
   (log/debug "List task definition families")
@@ -145,31 +174,39 @@
     (-> ecs-response (.getFamilies))))
 
 (defn describe-task-definition
-  [^AmazonECSClient client family]
-  (log/debug "Describe task definition family:" family)
+  [^AmazonECSClient client task-def]
+  (log/debug "Describe task definition:" task-def)
   (let [ecs-request (-> (DescribeTaskDefinitionRequest.)
-                        (.withTaskDefinition family))
+                        (.withTaskDefinition task-def))
         ecs-response (-> client
                          (.describeTaskDefinition ecs-request))]
-    (task-definition->map
-      (-> ecs-response (.getTaskDefinition)))))
+    (-> ecs-response
+        (.getTaskDefinition)
+        (task-definition->map))))
 
 (defn register-task-definition
   [^AmazonECSClient client family opts]
-  (let [{:keys [image cpu memory]} opts
+  (let [{:keys [image cpu memory environment]} opts
+        env-kv-pairs (map (fn [[k v]] (-> (KeyValuePair.)
+                                          (.withName (name k))
+                                          (.withValue v)))
+                          environment)
         ecs-container-def (-> (ContainerDefinition.)
                               (.withImage image)
                               (.withCpu (int cpu))
                               (.withMemory (int memory))
+                              (.withEnvironment env-kv-pairs)
                               (.withName default-container-name))
         ecs-request (-> (RegisterTaskDefinitionRequest.)
-                                 (.withFamily family)
-                                 (.withContainerDefinitions [ecs-container-def]))]
-    (log/debug "Register task definition. Family:" family "CPU:" cpu "Mem:" memory)
-    (task-definition->map
-      (-> client
-          (.registerTaskDefinition ecs-request)
-          (.getTaskDefinition)))))
+                        (.withFamily family)
+                        (.withContainerDefinitions [ecs-container-def]))]
+    (log/debug "Register task definition. Family:" family
+               "CPU:" cpu "Mem:" memory
+               "Environment:" environment)
+    (-> client
+        (.registerTaskDefinition ecs-request)
+        (.getTaskDefinition)
+        (.getTaskDefinitionArn))))
 
 (defn list-container-instances
   [^AmazonECSClient client cluster]
@@ -183,16 +220,65 @@
     (-> ecs-response (.getContainerInstanceArns))))
 
 (defn describe-container-instances
-  [^AmazonECSClient client cluster instances]
-  (log/debug "Describe container instances in cluster:" cluster "Instances:" instances)
-  (let [ecs-describe-request (-> (DescribeContainerInstancesRequest.)
-                                 (.withCluster cluster)
-                                 (.withContainerInstances instances))
-        ecs-response (-> client (.describeContainerInstances ecs-describe-request))
+  [^AmazonECSClient client cluster instances-arns]
+  (log/debug "Describe container instances in cluster:" cluster
+             "Instances:" (vec instances-arns))
+  (let [ecs-requests (-> (DescribeContainerInstancesRequest.)
+                         (.withCluster cluster)
+                         (.withContainerInstances instances-arns))
+        ecs-response (-> client (.describeContainerInstances ecs-requests))
         container-instances (-> ecs-response (.getContainerInstances))
         failures (-> ecs-response (.getFailures))]
     {:container-instances (mapv container-instance->map container-instances)
      :failures            (mapv failure->map failures)}))
+
+(defn list-tasks
+  [^AmazonECSClient client cluster]
+  (log/debug "List tasks in cluster:" cluster)
+  (let [ecs-request (-> (ListTasksRequest.)
+                        (.withCluster cluster))
+        ecs-response (-> client (.listTasks ecs-request))]
+    ;; TODO: Handle next token value
+    (when (-> ecs-response (.getNextToken))
+      (throw (RuntimeException. "List tasks response is multi paged")))
+    (-> ecs-response (.getTaskArns))))
+
+(defn describe-tasks
+  [^AmazonECSClient client cluster tasks-arns]
+  (log/debug "Describe tasks in cluster:" cluster
+             "Tasks:" (vec tasks-arns))
+  (let [ecs-request (-> (DescribeTasksRequest.)
+                        (.withCluster cluster)
+                        (.withTasks tasks-arns))
+        ecs-response (-> client (.describeTasks ecs-request))
+        tasks (-> ecs-response (.getTasks))
+        failures (-> ecs-response (.getFailures))]
+    {:tasks    (mapv task->map tasks)
+     :failures (mapv failure->map failures)}))
+
+(defn start-task
+  [^AmazonECSClient client cluster container-instance-arn task-definition command]
+  (let [container-override (-> (ContainerOverride.)
+                               (.withName default-container-name)
+                               (.withCommand command))
+        task-overrides (-> (TaskOverride.)
+                           (.withContainerOverrides [container-override]))
+        ecs-request (-> (StartTaskRequest.)
+                        (.withCluster cluster)
+                        (.withContainerInstances [container-instance-arn])
+                        (.withTaskDefinition task-definition)
+                        (.withOverrides task-overrides))]
+    (log/debug "Start task on:" container-instance-arn
+               "Task definition:" task-definition
+               "Command:" (vec command))
+    (let [ecs-response (-> client (.startTask ecs-request))
+          task (-> ecs-response (.getTasks) (seq) (first))
+          failure (-> ecs-response (.getFailures) (seq) (first))]
+      (cond
+        (and task (not failure)) {:task (-> task (.getTaskArn))}
+        (and failure (not task)) {:failure (-> failure (.getReason))}
+        ;; Should not be here
+        :else (throw (IllegalStateException. "Illegal StartTaskResponse:" ecs-response))))))
 
 ;; Combinators on top of AWS API
 

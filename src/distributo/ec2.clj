@@ -47,7 +47,7 @@
         fault (-> req (.getFault))
         fault-code (when fault (-> fault (.getCode)))
         instance-type (-> req (.getLaunchSpecification) (.getInstanceType) (keyword))
-        instance-id (-> req (.getInstanceId) (keyword))]
+        instance-id (-> req (.getInstanceId))]
     (remove-nil-values
       {:spot-instance-request-id spot-instance-request-id
        :spot-price               spot-price
@@ -92,7 +92,7 @@
          (.withKeyName key-name)
          (.withUserData (base64/encode user-data))
          (.withPlacement (-> (SpotPlacement.)
-                             (.withAvailabilityZone availability-zone)))
+                             (.withAvailabilityZone (name availability-zone))))
          (.withIamInstanceProfile (-> (IamInstanceProfileSpecification.)
                                       (.withName iam-role)))))))
 
