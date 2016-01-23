@@ -1,11 +1,11 @@
 (defproject setup "0.1.0-SNAPSHOT"
   :description "Distributo"
-  :dependencies [[org.clojure/clojure "1.7.0"]
+  :dependencies [[org.clojure/clojure "1.8.0"]
 
                  ;; Tools
                  [org.clojure/tools.cli "0.3.3"]
-                 [base64-clj "0.1.1"]
                  [org.clojure/core.async "0.2.374"]
+                 [base64-clj "0.1.1"]
                  [jarohen/chime "0.1.9"]
 
                  ;; Amazon Web Services

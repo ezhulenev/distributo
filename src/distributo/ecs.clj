@@ -16,11 +16,13 @@
 ;; Mapping from AWS SDK objects into clojure data structures
 
 (defn failure->map
-  [^Failure failure]
-  (let [arn (-> failure (.getArn))
-        reason (-> failure (.getReason))]
-    {:arn    arn
-     :reason reason}))
+  ([^Failure failure]
+   (failure->map failure :arn))
+  ([^Failure failure arn-key]
+   (let [arn (-> failure (.getArn))
+         reason (-> failure (.getReason))]
+     {arn-key arn
+      :reason reason})))
 
 (defn cluster->map
   [^Cluster cluster]
@@ -53,12 +55,12 @@
   [^TaskDefinition task-definition]
   (let [family (-> task-definition (.getFamily))
         revision (-> task-definition (.getRevision))
-        status (-> task-definition (.getStatus))
+        status (-> task-definition (.getStatus) (.toLowerCase) (keyword))
         container-definition (first (-> task-definition (.getContainerDefinitions)))
         environment (-> container-definition (.getEnvironment))]
     {:family               family
      :revision             revision
-     :status               (keyword status)
+     :status               status
      :container-definition (container-definition->map container-definition)
      :environment          (into {} (map (fn [kv-pair]
                                            (let [k (keyword (-> kv-pair (.getName)))
@@ -66,43 +68,47 @@
                                              [k v]))
                                          environment))}))
 
-(defn resource->map
-  [^Resource resource]
-  (let [name (-> resource (.getName) (keyword))
-        type (-> resource (.getType) (keyword))
-        value (condp = type
-                :INTEGER (-> resource (.getIntegerValue))
-                :DOUBLE (-> resource (.getDoubleValue))
-                :LONG (-> resource (.getLongValue))
-                :STRINGSET (-> resource (.getStringSetValue) (vec)))]
-    {:name name
-     :type type
-     :value value
-     }))
+(defn resources->map
+  [resources]
+  (->> resources
+       (mapv (fn [^Resource resource]
+               (let [name (-> resource (.getName) (.toLowerCase) (keyword))
+                     type (-> resource (.getType) (.toLowerCase) (keyword))
+                     value (condp = type
+                             :integer (-> resource (.getIntegerValue))
+                             :double (-> resource (.getDoubleValue))
+                             :long (-> resource (.getLongValue))
+                             :stringset (-> resource (.getStringSetValue) (vec)))]
+                 [name value])))
+       (filter (fn [[k _]] (#{:cpu :memory} k)))
+       (into {})))
 
 (defn container-instance->map
   [^ContainerInstance container-instance]
   (let [container-instance-arn (-> container-instance (.getContainerInstanceArn))
         ec2-instance-id (-> container-instance (.getEc2InstanceId))
+        status (-> container-instance (.getStatus) (.toLowerCase) (keyword))
         registered-resources (->> container-instance
                                   (.getRegisteredResources)
-                                  (mapv resource->map))
+                                  (resources->map))
         remaining-resources (->> container-instance
                                  (.getRemainingResources)
-                                 (mapv resource->map))]
+                                 (resources->map))]
     {:container-instance-arn container-instance-arn
      :ec2-instance-id        ec2-instance-id
+     :status                 status
      :registered-resources   registered-resources
      :remaining-resources    remaining-resources}))
 
 (defn container->map
   [^Container container]
   (let [name (-> container (.getName))
-        last-status (-> container (.getLastStatus))
+        last-status (-> container (.getLastStatus) (.toLowerCase) (keyword))
         exit-code (-> container (.getExitCode))]
-    {:name        name
-     :last-status (keyword last-status)
-     :exit-code   exit-code}))
+    (remove-nil-values
+      {:name        name
+       :last-status last-status
+       :exit-code   exit-code})))
 
 (defn task->map
   [^Task task]
@@ -110,14 +116,14 @@
         container-instance-arn (-> task (.getContainerInstanceArn))
         container (-> task (.getContainers) (first))
         command (-> task (.getOverrides) (.getContainerOverrides) (first) (.getCommand))
-        last-status (-> task (.getLastStatus))
-        desired-status (-> task (.getDesiredStatus))]
-    {:task-arn task-arn
+        last-status (-> task (.getLastStatus) (.toLowerCase) (keyword))
+        desired-status (-> task (.getDesiredStatus) (.toLowerCase) (keyword))]
+    {:task-arn               task-arn
      :container-instance-arn container-instance-arn
-     :container (container->map container)
-     :command (vec command)
-     :last-status (keyword last-status)
-     :desired-status (keyword desired-status)}))
+     :container              (container->map container)
+     :command                (vec command)
+     :last-status            last-status
+     :desired-status         desired-status}))
 
 ;; Construct new AWS SDK objects
 
@@ -130,7 +136,7 @@
 
 ;; AWS SDK ECS Api
 
-(defn create-cluster
+(defn create-cluster!
   [^AmazonECSClient client cluster]
   (log/debug "Create cluster:" cluster)
   (let [ecs-create-request (-> (CreateClusterRequest.)
@@ -140,7 +146,7 @@
         (.getCluster)
         (.getClusterArn))))
 
-(defn delete-cluster
+(defn delete-cluster!
   [^AmazonECSClient client cluster]
   (log/debug "Delete cluster:" cluster)
   (let [ecs-delete-request (-> (DeleteClusterRequest.)
@@ -184,7 +190,7 @@
         (.getTaskDefinition)
         (task-definition->map))))
 
-(defn register-task-definition
+(defn register-task-definition!
   [^AmazonECSClient client family opts]
   (let [{:keys [image cpu memory environment]} opts
         env-kv-pairs (map (fn [[k v]] (-> (KeyValuePair.)
@@ -230,7 +236,7 @@
         container-instances (-> ecs-response (.getContainerInstances))
         failures (-> ecs-response (.getFailures))]
     {:container-instances (mapv container-instance->map container-instances)
-     :failures            (mapv failure->map failures)}))
+     :failures            (mapv #(failure->map % :container-instance-arn)  failures)}))
 
 (defn list-tasks
   [^AmazonECSClient client cluster]
@@ -254,9 +260,9 @@
         tasks (-> ecs-response (.getTasks))
         failures (-> ecs-response (.getFailures))]
     {:tasks    (mapv task->map tasks)
-     :failures (mapv failure->map failures)}))
+     :failures (mapv #(failure->map % :task-arn) failures)}))
 
-(defn start-task
+(defn start-task!
   [^AmazonECSClient client cluster container-instance-arn task-definition command]
   (let [container-override (-> (ContainerOverride.)
                                (.withName default-container-name)

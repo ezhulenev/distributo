@@ -108,31 +108,6 @@
 
 ;; AWS SDK EC2 Api
 
-(defn request-spot-instances
-  [^AmazonEC2Client client cluster request]
-  (log/debug "Request spot instance. Cluster:" cluster "Request:" request)
-  (let [ec2-spot-request (new-spot-instances-request cluster request)]
-    (mapv spot-instances-request->map
-          (-> client
-              (.requestSpotInstances ec2-spot-request)
-              (.getSpotInstanceRequests)))))
-
-(defn tag-spot-instance-requests
-  [^AmazonEC2Client client cluster spot-requests]
-  (log/debug "Tag spot requests with cluster name:" cluster
-             "Requests:" (mapv :spot-instance-request-id spot-requests))
-  (let [tag (Tag. cluster-tag-name cluster)
-        ec2-tag-request (-> (CreateTagsRequest.)
-                            (.withResources (map :spot-instance-request-id spot-requests))
-                            (.withTags [tag]))]
-    (-> client (.createTags ec2-tag-request))))
-
-(defn request-and-tag-spot-instances
-  [^AmazonEC2Client client cluster request]
-  (let [spot-requests (request-spot-instances client cluster request)]
-    (tag-spot-instance-requests client cluster spot-requests)
-    spot-requests))
-
 (defn describe-spot-requests
   [^AmazonEC2Client client cluster]
   (log/debug "Describe spot requests in cluster:" cluster)
@@ -146,7 +121,32 @@
               (.describeSpotInstanceRequests ec2-describe-request)
               (.getSpotInstanceRequests)))))
 
-(defn cancel-spot-requests
+(defn request-spot-instances!
+  [^AmazonEC2Client client cluster request]
+  (log/debug "Request spot instance. Cluster:" cluster "Request:" request)
+  (let [ec2-spot-request (new-spot-instances-request cluster request)]
+    (mapv #(.getSpotInstanceRequestId %)
+          (-> client
+              (.requestSpotInstances ec2-spot-request)
+              (.getSpotInstanceRequests)))))
+
+(defn tag-spot-instance-requests!
+  [^AmazonEC2Client client cluster spot-requests-ids]
+  (log/debug "Tag spot requests with cluster name:" cluster
+             "Requests:" spot-requests-ids)
+  (let [tag (Tag. cluster-tag-name cluster)
+        ec2-tag-request (-> (CreateTagsRequest.)
+                            (.withResources spot-requests-ids)
+                            (.withTags [tag]))]
+    (-> client (.createTags ec2-tag-request))))
+
+(defn request-and-tag-spot-instances!
+  [^AmazonEC2Client client cluster request]
+  (let [spot-requests (request-spot-instances client cluster request)]
+    (tag-spot-instance-requests client cluster spot-requests)
+    spot-requests))
+
+(defn cancel-spot-requests!
   [^AmazonEC2Client client cluster spot-requests]
   (log/debug "Cancel spot requests in cluster:" cluster
              "Requests:" (mapv :spot-instance-request-id spot-requests))
@@ -156,7 +156,7 @@
           (-> client (.cancelSpotInstanceRequests ec2-request)
               (.getCancelledSpotInstanceRequests)))))
 
-(defn cancel-open-spot-requests
+(defn cancel-open-spot-requests!
   [^AmazonEC2Client client cluster]
   (log/debug "Cancel open spot requests in cluster:" cluster)
   (let [open-spot-requests (filter #(= (:state %) :open) (describe-spot-requests client cluster))]
