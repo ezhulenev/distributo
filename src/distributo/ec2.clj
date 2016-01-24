@@ -142,8 +142,8 @@
 
 (defn request-and-tag-spot-instances!
   [^AmazonEC2Client client cluster request]
-  (let [spot-requests (request-spot-instances client cluster request)]
-    (tag-spot-instance-requests client cluster spot-requests)
+  (let [spot-requests (request-spot-instances! client cluster request)]
+    (tag-spot-instance-requests! client cluster spot-requests)
     spot-requests))
 
 (defn cancel-spot-requests!
@@ -161,7 +161,7 @@
   (log/debug "Cancel open spot requests in cluster:" cluster)
   (let [open-spot-requests (filter #(= (:state %) :open) (describe-spot-requests client cluster))]
     (when (seq open-spot-requests)
-      (cancel-spot-requests client cluster open-spot-requests))))
+      (cancel-spot-requests! client cluster open-spot-requests))))
 
 ;; Combinators on top of low lever AWS SDK
 
