@@ -102,6 +102,26 @@
         (is (= ["started-task-arn#1"] (:tasks start-res)))
         (is (= (->State [job']) (:state start-res)))))))
 
+(deftest start-one-job-and-fail-second-job
+  (let [client nil
+        cluster "test"
+        state (->State (mk-jobs ["job#1" "job#2"]))
+        container-instances [(assoc m4-large-container-instance :container-instance-arn "arn-1")]
+        ;; atom counting calls to ecs/start-task!
+        counter (atom 0)]
+    (with-redefs-fn {#'distributo.ecs/start-task!
+                     (fn [_ _ _ _ _]
+                       ;; Ignores input and returns started task arn
+                       (swap! counter inc)
+                       (if (= 1 @counter)
+                         {:task-arn "started-task-arn#1"}
+                         {:failure "ERROR"}))}
+      #(let [start-res (start-jobs! client cluster state container-instances)
+             job-1' (assoc job :name "job#1" :status :running :task-arn "started-task-arn#1")
+             job-2' (assoc job :name "job#2" :status :failed :reason "ERROR")]
+        (is (= ["started-task-arn#1"] (:tasks start-res)))
+        (is (= (->State [job-1' job-2']) (:state start-res)))))))
+
 (deftest start-four-out-of-five-jobs
   (let [client nil
         cluster "test"
