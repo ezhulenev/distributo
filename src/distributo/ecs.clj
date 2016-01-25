@@ -274,14 +274,14 @@
                         (.withContainerInstances [container-instance-arn])
                         (.withTaskDefinition task-definition)
                         (.withOverrides task-overrides))]
-    (log/debug "Start task on:" container-instance-arn
-               "Task definition:" task-definition
-               "Command:" (vec command))
+    (log/debug "Start task:" task-definition
+               "Command:" (vec command)
+               "Container instance:" container-instance-arn)
     (let [ecs-response (-> client (.startTask ecs-request))
           task (-> ecs-response (.getTasks) (seq) (first))
           failure (-> ecs-response (.getFailures) (seq) (first))]
       (cond
-        (and task (not failure)) {:task (-> task (.getTaskArn))}
+        (and task (not failure)) {:task-arn (-> task (.getTaskArn))}
         (and failure (not task)) {:failure (-> failure (.getReason))}
         ;; Should not be here
         :else (throw (IllegalStateException. "Illegal StartTaskResponse:" ecs-response))))))
