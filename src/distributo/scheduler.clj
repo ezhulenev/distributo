@@ -4,7 +4,23 @@
             [com.rpl.specter :refer :all]
             [clojure.tools.logging :as log]))
 
-"Scheduler manages executing jobs (tasks) on available ECS container instances"
+"Scheduler manages executing jobs (tasks) on available ECS container instances."
+
+;; Job Life Cycle: (* terminal states)
+;;
+;; :pending -> :started
+;;               / \
+;;             /    \
+;;     :failed*      :finished*
+;;
+;; 1. :waiting   - waiting for resources to start ECS task
+;; 2. :started   - ECS task started
+;; 3. :failed    - ECS task failed
+;; 4. :finished  - ECS task finished
+;;
+;; Job can go from :started into :pending state it instance that was used
+;; for running task was terminated. In this case :task-arn dissoced
+;; from job, to remove confusion
 
 (defrecord Job [name task-definition command required-resources status task])
 
@@ -25,7 +41,7 @@
             :task-definition    task-definition
             :command            command
             :required-resources (required-resources client task-definition)
-            :status             :pending})
+            :status             :waiting})
 
 ;; Concept of fitness calculattion for task placing is borrowed
 ;; from Netflix/Fenzo: https://github.com/Netflix/Fenzo/wiki/Fitness-Calculators
@@ -81,7 +97,7 @@
 (defn start-jobs!
   [^AmazonECSClient client cluster ^State state initital-container-instances]
   (let [container-instances (atom initital-container-instances)
-        pending? #(= (:status %) :pending)
+        waiting? #(= (:status %) :waiting)
         start-job (fn [job]
                     (if-let [best-fit (best-fit (:required-resources job) @container-instances)]
                       ;; Found container instance to run job task
@@ -103,7 +119,7 @@
                                               (partial retract-resources
                                                        (:required-resources job)
                                                        (:container-instance-arn best-fit)))
-                                       [(assoc job :status :running :task-arn task-arn)
+                                       [(assoc job :status :started :task-arn task-arn)
                                         [task-arn]])
                             ;; Task failed to start for whatever reason
                             failure [(assoc job :status :failed :reason failure)
@@ -112,6 +128,66 @@
                       (do
                         (log/trace "Cant't find resources to start job:" (:name job))
                         (job []))))
-        [state' tasks] (replace-in [:jobs ALL pending?] start-job state)]
+        [state' tasks] (replace-in [:jobs ALL waiting?] start-job state)]
     {:state state'
      :tasks tasks}))
+
+(defn update-state
+  "Update state with latest task information"
+  [^State state tasks]
+  (let [arn->task (into {} (for [task tasks] [(:task-arn task) task]))
+        updated? #(contains? arn->task (:task-arn %))
+        update (fn [job]
+                 (let [name (:name job)
+                       task (get arn->task (:task-arn job))
+                       last-status (:last-status task)
+                       desired-status (:desired-status task)
+                       container-last-status (get-in task [:container :last-status])
+                       exit-code (get-in task [:container :exit-code])]
+                   (log/trace "Update job" name "status with task status:" {:last-status           last-status
+                                                                            :desired-status        desired-status
+                                                                            :container-last-status container-last-status})
+                   (condp = [last-status desired-status container-last-status]
+                     ;; Task pending: downloading container, etc...
+                     [:pending :running :pending] (-> job
+                                                      (assoc :status :started))
+                     ;; Task running
+                     [:running :running :running] (-> job
+                                                      (assoc :status :started))
+                     ;; TODO: Limit max retry number?
+                     ;; Instance terminated before container started
+                     [:stopped :stopped :pending] (do
+                                                    (log/warn "Job" name "stopped. Instance terminated before container started")
+                                                    (-> job
+                                                        (assoc :status :waiting)
+                                                        (dissoc :task-arn)))
+                     ;; Instance terminated while container was running
+                     [:stopped :stopped :running] (do
+                                                    (log/warn "Job" name "stopped. Instance terminated while container was running")
+                                                    (-> job
+                                                        (assoc :status :waiting)
+                                                        (dissoc :task-arn)))
+                     ;; Task stopped
+                     [:stopped :stopped :stopped] (cond
+                                                    ;; Docker container never started (wrong image, etc...)
+                                                    (nil? exit-code) (do
+                                                                       (log/warn "Job" name "stopped without any exit code")
+                                                                       (-> job
+                                                                           (assoc :status :failed)
+                                                                           (assoc :reason "No exit code available. Possibly Docker image not found")))
+                                                    ;; Container finished successfully
+                                                    (= 0 exit-code) (do
+                                                                      (log/debug "Job" name "successfully finished")
+                                                                      (-> job
+                                                                          (assoc :status :finished)))
+                                                    ;; It started and failed
+                                                    :else (do
+                                                            (log/warn "Job" job "stopped with non zero exit code:" exit-code)
+                                                            (-> job
+                                                                (assoc :status :failed)
+                                                                (assoc :reason (str "Non zero exit code: " exit-code)))))
+                     ;; Unexpected status treated as job failed
+                     :else (-> job
+                               (assoc :status :failed)
+                               (assoc :reason :reason "Unknown task status")))))]
+    (transform [:jobs ALL updated?] update state)))

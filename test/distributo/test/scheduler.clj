@@ -6,7 +6,7 @@
           :task-definition    "test-task",
           :command            ["start"],
           :required-resources {:cpu 1000, :memory 1024},
-          :status             :pending})
+          :status             :waiting})
 
 (def m4-large-container-instance {:container-instance-arn "arn:aws:ecs:us-east-1:050689537474:container-instance/some-random-arn",
                                   :ec2-instance-id        "i-123456789",
@@ -98,7 +98,7 @@
                        ;; Ignores input and returns started task arn
                        {:task-arn "started-task-arn#1"})}
       #(let [start-res (start-jobs! client cluster state container-instances)
-             job' (assoc job :status :running :task-arn "started-task-arn#1")]
+             job' (assoc job :status :started :task-arn "started-task-arn#1")]
         (is (= ["started-task-arn#1"] (:tasks start-res)))
         (is (= (->State [job']) (:state start-res)))))))
 
@@ -117,7 +117,7 @@
                          {:task-arn "started-task-arn#1"}
                          {:failure "ERROR"}))}
       #(let [start-res (start-jobs! client cluster state container-instances)
-             job-1' (assoc job :name "job#1" :status :running :task-arn "started-task-arn#1")
+             job-1' (assoc job :name "job#1" :status :started :task-arn "started-task-arn#1")
              job-2' (assoc job :name "job#2" :status :failed :reason "ERROR")]
         (is (= ["started-task-arn#1"] (:tasks start-res)))
         (is (= (->State [job-1' job-2']) (:state start-res)))))))
@@ -138,11 +138,95 @@
                        (swap! counter inc)
                        {:task-arn (str "started-task-arn#" @counter)})}
       #(let [start-res (start-jobs! client cluster state container-instances)
-             job-1' (assoc job :name "job#1" :status :running :task-arn "started-task-arn#1")
-             job-2' (assoc job :name "job#2" :status :running :task-arn "started-task-arn#2")
-             job-3' (assoc job :name "job#3" :status :running :task-arn "started-task-arn#3")
-             job-4' (assoc job :name "job#4" :status :running :task-arn "started-task-arn#4")
+             job-1' (assoc job :name "job#1" :status :started :task-arn "started-task-arn#1")
+             job-2' (assoc job :name "job#2" :status :started :task-arn "started-task-arn#2")
+             job-3' (assoc job :name "job#3" :status :started :task-arn "started-task-arn#3")
+             job-4' (assoc job :name "job#4" :status :started :task-arn "started-task-arn#4")
              job-5' (assoc job :name "job#5")
              state' (->State [job-1' job-2' job-3' job-4' job-5'])]
         (is (= ["started-task-arn#1" "started-task-arn#2" "started-task-arn#3" "started-task-arn#4"] (:tasks start-res)))
         (is (= state' (:state start-res)))))))
+
+(deftest update-state-when-task-is-pending
+  (let [job (-> job (assoc :task-arn "task-arn-1" :status :pending))
+        state (->State [job])
+        tasks [{:task-arn       "task-arn-1"
+                :last-status    :pending
+                :desired-status :running
+                :container      {:last-status :pending}}]
+        ;; Expected afte applying task updates
+        job' (-> job (assoc :task-arn "task-arn-1" :status :started))
+        state' (->State [job'])]
+    (is (= state' (update-state state tasks)))))
+
+(deftest update-state-when-task-is-running
+  (let [job (-> job (assoc :task-arn "task-arn-1" :status :pending))
+        state (->State [job])
+        tasks [{:task-arn       "task-arn-1"
+                :last-status    :running
+                :desired-status :running
+                :container      {:last-status :running}}]
+        ;; Expected afte applying task updates
+        job' (-> job (assoc :task-arn "task-arn-1" :status :started))
+        state' (->State [job'])]
+    (is (= state' (update-state state tasks)))))
+
+(deftest get-back-to-waiting-when-pending-task-instance-terminated
+  (let [job (-> job (assoc :task-arn "task-arn-1" :status :pending))
+        state (->State [job])
+        tasks [{:task-arn       "task-arn-1"
+                :last-status    :stopped
+                :desired-status :stopped
+                :container      {:last-status :pending}}]
+        ;; Expected afte applying task updates
+        job' (-> job (assoc :status :waiting) (dissoc :task-arn))
+        state' (->State [job'])]
+    (is (= state' (update-state state tasks)))))
+
+(deftest get-back-to-waiting-when-running-task-instance-terminated
+  (let [job (-> job (assoc :task-arn "task-arn-1" :status :pending))
+        state (->State [job])
+        tasks [{:task-arn       "task-arn-1"
+                :last-status    :stopped
+                :desired-status :stopped
+                :container      {:last-status :running}}]
+        ;; Expected afte applying task updates
+        job' (-> job (assoc :status :waiting) (dissoc :task-arn))
+        state' (->State [job'])]
+    (is (= state' (update-state state tasks)))))
+
+(deftest finish-when-stopped-with-zero-exit-code
+  (let [job (-> job (assoc :task-arn "task-arn-1" :status :started))
+        state (->State [job])
+        tasks [{:task-arn       "task-arn-1"
+                :last-status    :stopped
+                :desired-status :stopped
+                :container      {:last-status :stopped :exit-code 0}}]
+        ;; Expected afte applying task updates
+        job' (-> job (assoc :status :finished))
+        state' (->State [job'])]
+    (is (= state' (update-state state tasks)))))
+
+(deftest fail-when-stopped-without-exit-code
+  (let [job (-> job (assoc :task-arn "task-arn-1" :status :started))
+        state (->State [job])
+        tasks [{:task-arn       "task-arn-1"
+                :last-status    :stopped
+                :desired-status :stopped
+                :container      {:last-status :stopped}}]
+        ;; Expected afte applying task updates
+        job' (-> job (assoc :status :failed :reason "No exit code available. Possibly Docker image not found"))
+        state' (->State [job'])]
+    (is (= state' (update-state state tasks)))))
+
+(deftest fail-when-stopped-without-non-zero-exit-code
+  (let [job (-> job (assoc :task-arn "task-arn-1" :status :started))
+        state (->State [job])
+        tasks [{:task-arn       "task-arn-1"
+                :last-status    :stopped
+                :desired-status :stopped
+                :container      {:last-status :stopped :exit-code 1}}]
+        ;; Expected afte applying task updates
+        job' (-> job (assoc :status :failed :reason "Non zero exit code: 1"))
+        state' (->State [job'])]
+    (is (= state' (update-state state tasks)))))

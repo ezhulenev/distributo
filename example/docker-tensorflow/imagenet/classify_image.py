@@ -223,21 +223,27 @@ def run_inference_on_image_url(sess, img_id, img_url, node_lookup):
     print('Run inference on image id: %s; url: %s' % (img_id, img_url))
     image_data = urllib.request.urlopen(img_url, timeout=1.0).read()
   except HTTPError:
+    print('Image download HTTPError: %s' % sys.exc_info()[0])
     return (img_id, img_url, None)
   except:
+    print('Image download error: %s' % sys.exc_info()[0])
     return (img_id, img_url, None)
-  scores = []
-  softmax_tensor = sess.graph.get_tensor_by_name('softmax:0')
-  predictions = sess.run(softmax_tensor,
-                         {'DecodeJpeg/contents:0': image_data})
-  predictions = np.squeeze(predictions)
-  top_k = predictions.argsort()[-FLAGS.num_top_predictions:][::-1]
-  scores = []
-  for node_id in top_k:
-    human_string = node_lookup.id_to_string(node_id)
-    score = predictions[node_id]
-    scores.append((human_string, score))
-  return (img_id, img_url, scores)
+  try:
+    scores = []
+    softmax_tensor = sess.graph.get_tensor_by_name('softmax:0')
+    predictions = sess.run(softmax_tensor,
+                           {'DecodeJpeg/contents:0': image_data})
+    predictions = np.squeeze(predictions)
+    top_k = predictions.argsort()[-FLAGS.num_top_predictions:][::-1]
+    scores = []
+    for node_id in top_k:
+      human_string = node_lookup.id_to_string(node_id)
+      score = predictions[node_id]
+      scores.append((human_string, score))
+    return (img_id, img_url, scores)
+  except:
+    print('Prediction error: %s' % sys.exc_info()[0])
+    return (img_id, img_url, None)
 
 
 def run_inference_on_images(batch):
