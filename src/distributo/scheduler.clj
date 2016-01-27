@@ -41,12 +41,14 @@
                                     ". Task definition: " task-definition))
     (select-keys container-def [:cpu :memory])))
 
+(def required-resources-memo (memoize required-resources))
+
 (defn mk-job
   [^AmazonECSClient client name task-definition command]
   map->Job {:name               name
             :task-definition    task-definition
             :command            command
-            :required-resources (required-resources client task-definition)
+            :required-resources (required-resources-memo client task-definition)
             :status             :waiting})
 
 ;; Concept of fitness calculattion for task placing is borrowed

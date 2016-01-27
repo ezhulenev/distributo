@@ -20,8 +20,8 @@
                             :update-interval (-> 1 t/seconds)})
 
 (defn allocate-cluster-resources!
-  ([^AmazonEC2Client client cluster n bid-request]
-   (allocate-cluster-resources! client cluster n bid-request (ec2/describe-spot-requests client cluster)))
+  ([^AmazonEC2Client client cluster n spot-instance-req]
+   (allocate-cluster-resources! client cluster n spot-instance-req (ec2/describe-spot-requests client cluster)))
   ([^AmazonEC2Client client cluster n bid-request spot-requests]
    (let [open (->> spot-requests
                    (filter #(or (= :open (:state %))
@@ -48,6 +48,7 @@
   ([^AmazonEC2Client client cluster n]
     (await-fulfillment client cluster n {}))
   ([^AmazonEC2Client client cluster n opts]
+   (log/info "Await cluster" cluster "fulfillment up to" n "minimum instances")
    (let [{:keys [update-interval fulfill-timeout]} (merge default-await-options opts)
          timeout-ch (async/timeout fulfill-timeout)
          fulfilled-ch (async/chan)
@@ -66,7 +67,7 @@
        (shutdown)
        (condp = result
          :fulfilled (log/trace "Successfully fulfilled minimum requirement of" n "instances")
-         :timed-out (throw (RuntimeException. "Timed out awaiting mimimum fulfillment")))))))
+         :timed-out (throw (RuntimeException. "Timed out awaiting mimimum fulfillment. Maybe price too low")))))))
 
 (defn free-cluster-resources!
   [^AmazonEC2Client client cluster]

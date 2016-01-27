@@ -19,5 +19,5 @@
                  [org.clojure/tools.logging "0.2.6"]
                  [org.slf4j/slf4j-log4j12 "1.7.12"]]
 
-  :main distributo.core
+  :main distributo.tensorflow
   :jvm-opts ["-Xmx2g", "-server"])
