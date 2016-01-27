@@ -25,6 +25,32 @@
 (defn approx= [tolerance x y]
   (< (absolute-difference x y) tolerance))
 
+;; Redef stubs for ecs namespace
+
+(defn redef-start-task-always-succeded []
+  (let [counter (atom 0)]
+    {#'distributo.ecs/start-task! (fn [_ _ _ _ _]
+                                    (swap! counter inc)
+                                    {:task-arn (str "started-task-arn#" @counter)})}))
+
+(defn redef-list-container-instances [container-instances]
+  {#'distributo.ecs/list-container-instances (fn [_ _]
+                                               (mapv :container-instance-arn container-instances))})
+
+(defn redef-describe-container-instances [container-instances]
+  {#'distributo.ecs/describe-container-instances (fn [_ _ _]
+                                                   {:container-instances container-instances :failures []})})
+
+(defn redef-describe-tasks-always-completed []
+  {#'distributo.ecs/describe-tasks (fn [_ _ task-arns]
+                                     {:tasks (mapv (fn [arn] {:task-arn       arn
+                                                              :last-status    :stopped
+                                                              :desired-status :stopped
+                                                              :container      {:last-status :stopped :exit-code 0}})
+                                                   task-arns)})})
+
+;; Tests
+
 (deftest compute-cpu-fitess
   (is (= 0.9 (cpu-fitness {:cpu 500}
                           {:cpu 1000}
@@ -36,8 +62,8 @@
                              {:memory 600}))))
 
 (deftest compute-cpu-and-memory-fitness
-  (is (approx= 0.0001 0.85 (cpu-and-memory-fitness {:cpu 500 :memory 400}     ;; required
-                                                   {:cpu 1000 :memory 1000}   ;; registered
+  (is (approx= 0.0001 0.85 (cpu-and-memory-fitness {:cpu 500 :memory 400} ;; required
+                                                   {:cpu 1000 :memory 1000} ;; registered
                                                    {:cpu 600 :memory 600})))) ;; remaining
 
 (deftest fits-works-correctly
@@ -94,10 +120,8 @@
         cluster "test"
         state (->State [job])
         container-instances [m4-large-container-instance]]
-    (with-redefs-fn {#'distributo.ecs/start-task!
-                     (fn [_ _ _ _ _]
-                       ;; Ignores input and returns started task arn
-                       {:task-arn "started-task-arn#1"})}
+    (with-redefs-fn (merge
+                      (redef-start-task-always-succeded))
       #(let [start-res (start-jobs! client cluster state container-instances)
              job' (assoc job :status :started :task-arn "started-task-arn#1")]
         (is (= ["started-task-arn#1"] (:tasks start-res)))
@@ -130,14 +154,8 @@
         state (->State (mk-jobs ["job#1" "job#2" "job#3" "job#4" "job#5"]))
         ;; and only 2 instances, one of each can fit only 2 jobs
         container-instances [(assoc m4-large-container-instance :container-instance-arn "arn-1")
-                             (assoc m4-large-container-instance :container-instance-arn "arn-2")]
-        ;; atom counting calls to ecs/start-task!
-        counter (atom 0)]
-    (with-redefs-fn {#'distributo.ecs/start-task!
-                     (fn [_ _ _ _ _]
-                       ;; Ignores input and returns started task arn
-                       (swap! counter inc)
-                       {:task-arn (str "started-task-arn#" @counter)})}
+                             (assoc m4-large-container-instance :container-instance-arn "arn-2")]]
+    (with-redefs-fn (merge (redef-start-task-always-succeded))
       #(let [start-res (start-jobs! client cluster state container-instances)
              job-1' (assoc job :name "job#1" :status :started :task-arn "started-task-arn#1")
              job-2' (assoc job :name "job#2" :status :started :task-arn "started-task-arn#2")
@@ -235,29 +253,17 @@
 (deftest run-all-jobs-when-they-finish-immediately
   (let [client nil
         cluster "test"
-        jobs (mk-jobs ["job#1" "job#2" "job#3" "job#4" "job#5" "job#6" "job#7"])
+        jobs (mk-jobs (for [i (range 10)] (str "job#" i)))
         container-instances [(assoc m4-large-container-instance :container-instance-arn "arn-1")
-                             (assoc m4-large-container-instance :container-instance-arn "arn-2")]
-        counter (atom 0)]
-    (with-redefs-fn {#'distributo.ecs/start-task!
-                     (fn [_ _ _ _ _]
-                       (swap! counter inc)
-                       {:task-arn (str "started-task-arn#" @counter)})
-                     #'distributo.ecs/list-container-instances
-                     (fn [_ _] (mapv :container-instance-arn container-instances))
-                     #'distributo.ecs/describe-container-instances
-                     (fn [_ _ _] {:container-instances container-instances :failures []})
-                     ;; Task always completed when described
-                     #'distributo.ecs/describe-tasks
-                     (fn [_ _ task-arns]
-                       {:tasks (mapv (fn [arn] {:task-arn       arn
-                                                :last-status    :stopped
-                                                :desired-status :stopped
-                                                :container      {:last-status :stopped :exit-code 0}})
-                                     task-arns)})}
+                             (assoc m4-large-container-instance :container-instance-arn "arn-2")]]
+    (with-redefs-fn (merge
+                      (redef-start-task-always-succeded)
+                      (redef-list-container-instances container-instances)
+                      (redef-describe-container-instances container-instances)
+                      (redef-describe-tasks-always-completed))
       #(let [final-state (run-scheduler! client cluster jobs {:update-interval (t/millis 1)})
              jobs' (map-indexed (fn [idx job] (-> job
-                                      (assoc :status :finished)
-                                      (assoc :task-arn (str "started-task-arn#" (+ 1 idx))))) jobs)
+                                                  (assoc :status :finished)
+                                                  (assoc :task-arn (str "started-task-arn#" (+ 1 idx))))) jobs)
              state' (->State jobs')]
         (is (= state' final-state))))))

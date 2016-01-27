@@ -211,22 +211,23 @@
                                    (= (:status job) :started)))
          shutdown (chime-at (periodic/periodic-seq (t/now) update-interval)
                             (fn [_]
-                              (let [task-arns (map :task-arn (filter #(= (:status %) :started) (:jobs @state-atom)))
-                                    tasks (ecs/describe-tasks client cluster task-arns)
+                              (let [job-started? (fn [job] (= (:status job) :started))
+                                    started-task-arns (map :task-arn (filter job-started? (:jobs @state-atom)))
+                                    started-tasts (ecs/describe-tasks client cluster started-task-arns)
                                     container-instances (ecs/describe-container-instances
                                                           client
                                                           cluster
                                                           (ecs/list-container-instances client cluster))]
                                 ;; TODO: Better failures handling?
-                                (when (seq (:failures tasks))
-                                  (log/warn "Got failures trying to describe tasks:" (:failures tasks)))
+                                (when (seq (:failures started-tasts))
+                                  (log/warn "Got failures trying to describe tasks:" (:failures started-tasts)))
                                 (when (seq (:failures container-instances))
                                   (log/warn "Got failures trying to describe container instances:" (:failures container-instances)))
                                 ;; Update state based on new ECS cluster state
                                 (swap! state-atom (fn [state]
                                                     (let [state' (update-state
                                                                    state
-                                                                   (:tasks tasks))
+                                                                   (:tasks started-tasts))
                                                           started (start-jobs!
                                                                     client
                                                                     cluster
