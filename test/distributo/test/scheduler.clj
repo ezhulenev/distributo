@@ -238,7 +238,7 @@
         state' (->State [job'])]
     (is (= state' (update-state state tasks)))))
 
-(deftest fail-when-stopped-without-non-zero-exit-code
+(deftest fail-when-stopped-with-non-zero-exit-code
   (let [job (-> job (assoc :task-arn "task-arn-1" :status :started))
         state (->State [job])
         tasks [{:task-arn       "task-arn-1"

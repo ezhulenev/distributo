@@ -4,7 +4,7 @@
             [clojure.string :as str]
             [base64-clj.core :as base64]
             [distributo.util :refer :all])
-  (:import (com.amazonaws.services.ec2.model LaunchSpecification IamInstanceProfileSpecification RequestSpotInstancesRequest SpotInstanceRequest CreateTagsRequest Tag DescribeSpotInstanceRequestsRequest Filter SpotInstanceType CancelSpotInstanceRequestsRequest CancelledSpotInstanceRequest SpotPlacement)
+  (:import (com.amazonaws.services.ec2.model LaunchSpecification IamInstanceProfileSpecification RequestSpotInstancesRequest SpotInstanceRequest CreateTagsRequest Tag DescribeSpotInstanceRequestsRequest Filter SpotInstanceType CancelSpotInstanceRequestsRequest CancelledSpotInstanceRequest SpotPlacement TerminateInstancesRequest InstanceStateChange)
            (com.amazonaws.services.ec2 AmazonEC2Client)
            (com.amazonaws.auth AWSCredentialsProvider)
            (com.amazonaws.regions Region Regions)))
@@ -64,6 +64,15 @@
         state (-> req (.getState) (keyword))]
     {:spot-instance-request-id spot-instance-request-id
      :state                    state}))
+
+(defn instance-state-change->map
+  [^InstanceStateChange change]
+  (let [instance-id (-> change (.getInstanceId))
+        current-state (-> change (.getCurrentState) (.getName) (.toLowerCase) (keyword))
+        previous-state (-> change (.getPreviousState) (.getName) (.toLowerCase) (keyword))]
+    {:instance-id instance-id
+     :current-stat current-state
+     :previous-state previous-state}))
 
 ;; Construct new AWS SDK objects
 
@@ -153,15 +162,20 @@
   (let [ec2-request (-> (CancelSpotInstanceRequestsRequest.)
                         (.withSpotInstanceRequestIds spot-requests))]
     (mapv cancelled-spot-instance-request->map
-          (-> client (.cancelSpotInstanceRequests ec2-request)
+          (-> client
+              (.cancelSpotInstanceRequests ec2-request)
               (.getCancelledSpotInstanceRequests)))))
 
-(defn cancel-open-spot-requests!
-  [^AmazonEC2Client client cluster]
-  (log/debug "Cancel open spot requests in cluster:" cluster)
-  (let [open-spot-requests (filter #(= (:state %) :open) (describe-spot-requests client cluster))]
-    (when (seq open-spot-requests)
-      (cancel-spot-requests! client cluster (map :spot-instance-request-id open-spot-requests)))))
+(defn terminate-instances!
+  [^AmazonEC2Client client instance-ids]
+  (log/debug "Terminate EC2 instances:" instance-ids)
+  (let [ec2-request (-> (TerminateInstancesRequest.)
+                        (.withInstanceIds instance-ids))
+        ec2-response (-> client
+                         (.terminateInstances ec2-request))]
+    (mapv instance-state-change->map
+          (-> ec2-response
+              (.getTerminatingInstances)))))
 
 ;; Combinators on top of low lever AWS SDK
 

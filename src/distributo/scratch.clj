@@ -3,12 +3,15 @@
 ;(require '[distributo.ecs :as ecs]
 ;         '[distributo.ec2 :as ec2]
 ;         '[distributo.scheduler :as sched]
+;         '[distributo.allocator :as alloc]
 ;         '[distributo.util :refer :all]
 ;         '[distributo.aws :refer :all])
 ;
 ;(def ec2 (ec2/new-client default-credential-provider-chain))
 ;
 ;(def ecs (ecs/new-client default-credential-provider-chain))
+;
+;(ec2/request-and-tag-spot-instances! ec2 "distributo" ec2/default-spot-instance-request)
 ;
 ;(ecs/register-task-definition!
 ;  ecs
