@@ -1,6 +1,7 @@
 (ns distributo.test.scheduler
   (:use clojure.test)
-  (:require [distributo.scheduler :refer :all]))
+  (:require [distributo.scheduler :refer :all]
+            [clj-time.core :as t]))
 
 (def job {:name               "test-job",
           :task-definition    "test-task",
@@ -230,3 +231,33 @@
         job' (-> job (assoc :status :failed :reason "Non zero exit code: 1"))
         state' (->State [job'])]
     (is (= state' (update-state state tasks)))))
+
+(deftest run-all-jobs-when-they-finish-immediately
+  (let [client nil
+        cluster "test"
+        jobs (mk-jobs ["job#1" "job#2" "job#3" "job#4" "job#5" "job#6" "job#7"])
+        container-instances [(assoc m4-large-container-instance :container-instance-arn "arn-1")
+                             (assoc m4-large-container-instance :container-instance-arn "arn-2")]
+        counter (atom 0)]
+    (with-redefs-fn {#'distributo.ecs/start-task!
+                     (fn [_ _ _ _ _]
+                       (swap! counter inc)
+                       {:task-arn (str "started-task-arn#" @counter)})
+                     #'distributo.ecs/list-container-instances
+                     (fn [_ _] (mapv :container-instance-arn container-instances))
+                     #'distributo.ecs/describe-container-instances
+                     (fn [_ _ _] {:container-instances container-instances :failures []})
+                     ;; Task always completed when described
+                     #'distributo.ecs/describe-tasks
+                     (fn [_ _ task-arns]
+                       {:tasks (mapv (fn [arn] {:task-arn       arn
+                                                :last-status    :stopped
+                                                :desired-status :stopped
+                                                :container      {:last-status :stopped :exit-code 0}})
+                                     task-arns)})}
+      #(let [final-state (run-scheduler! client cluster jobs {:update-interval (t/millis 1)})
+             jobs' (map-indexed (fn [idx job] (-> job
+                                      (assoc :status :finished)
+                                      (assoc :task-arn (str "started-task-arn#" (+ 1 idx))))) jobs)
+             state' (->State jobs')]
+        (is (= state' final-state))))))

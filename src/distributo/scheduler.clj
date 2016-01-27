@@ -1,8 +1,12 @@
 (ns distributo.scheduler
   (:import (com.amazonaws.services.ecs AmazonECSClient))
-  (:require [distributo.ecs :as ecs]
-            [com.rpl.specter :refer :all]
-            [clojure.tools.logging :as log]))
+  (:require [com.rpl.specter :refer :all]
+            [clojure.core.async :as async]
+            [distributo.ecs :as ecs]
+            [clojure.tools.logging :as log]
+            [clj-time.core :as t]
+            [clj-time.periodic :as periodic]
+            [chime :refer [chime-at]]))
 
 "Scheduler manages executing jobs (tasks) on available ECS container instances."
 
@@ -25,6 +29,8 @@
 (defrecord Job [name task-definition command required-resources status task])
 
 (defrecord State [jobs])
+
+(def default-scheduler-opts {:update-interval (-> 10 t/seconds)})
 
 (defn required-resources
   [^AmazonECSClient client task-definition]
@@ -96,10 +102,10 @@
 
 (defn start-jobs!
   [^AmazonECSClient client cluster ^State state initital-container-instances]
-  (let [container-instances (atom initital-container-instances)
+  (let [container-instances-atom (atom initital-container-instances)
         waiting? #(= (:status %) :waiting)
         start-job (fn [job]
-                    (if-let [best-fit (best-fit (:required-resources job) @container-instances)]
+                    (if-let [best-fit (best-fit (:required-resources job) @container-instances-atom)]
                       ;; Found container instance to run job task
                       (do
                         (log/trace "Found resources to start job:" (:name job)
@@ -115,7 +121,7 @@
                             ;; Task was successfully started
                             task-arn (do
                                        ;; Update remaining resources
-                                       (swap! container-instances
+                                       (swap! container-instances-atom
                                               (partial retract-resources
                                                        (:required-resources job)
                                                        (:container-instance-arn best-fit)))
@@ -191,3 +197,48 @@
                                (assoc :status :failed)
                                (assoc :reason :reason "Unknown task status")))))]
     (transform [:jobs ALL updated?] update state)))
+
+(defn run-scheduler!
+  "Run schedulder until all jobs completed (finished or failed)"
+  ([^AmazonECSClient client cluster jobs]
+   (run-scheduler! client cluster jobs {}))
+  ([^AmazonECSClient client cluster jobs opts]
+   (let [{:keys [update-interval]} (merge default-scheduler-opts opts)
+         state-atom (atom (->State jobs))
+         done-ch (async/chan)
+         non-terminal-state? (fn [job]
+                               (or (= (:status job) :waiting)
+                                   (= (:status job) :started)))
+         shutdown (chime-at (periodic/periodic-seq (t/now) update-interval)
+                            (fn [_]
+                              (let [task-arns (map :task-arn (filter #(= (:status %) :started) (:jobs @state-atom)))
+                                    tasks (ecs/describe-tasks client cluster task-arns)
+                                    container-instances (ecs/describe-container-instances
+                                                          client
+                                                          cluster
+                                                          (ecs/list-container-instances client cluster))]
+                                ;; TODO: Better failures handling?
+                                (when (seq (:failures tasks))
+                                  (log/warn "Got failures trying to describe tasks:" (:failures tasks)))
+                                (when (seq (:failures container-instances))
+                                  (log/warn "Got failures trying to describe container instances:" (:failures container-instances)))
+                                ;; Update state based on new ECS cluster state
+                                (swap! state-atom (fn [state]
+                                                    (let [state' (update-state
+                                                                   state
+                                                                   (:tasks tasks))
+                                                          started (start-jobs!
+                                                                    client
+                                                                    cluster
+                                                                    state'
+                                                                    (:container-instances container-instances))]
+                                                      (when (seq (:tasks started))
+                                                        (log/trace "Started" (count (:tasks started)) "new tasks"))
+                                                      (:state started))))
+                                ;; Finish when all jobs are in terminal state
+                                (when (empty? (filter non-terminal-state? (:jobs @state-atom)))
+                                  (async/close! done-ch)))))]
+     ;; Wait until all jobs completed
+     (async/<!! done-ch)
+     (shutdown)
+     (deref state-atom))))
