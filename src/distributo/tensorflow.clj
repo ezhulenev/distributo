@@ -48,13 +48,32 @@
 
       (log/info "Number of jobs to run:" (count jobs))
 
-      (sched/run-scheduler! ecs cluster jobs {:update-interval (t/seconds 10)})
+      (let [state' (sched/run-scheduler! ecs cluster jobs {:update-interval (t/seconds 10)})
+            jobs' (:jobs state')]
+        (log/info "Finished running scheduler. Total jobs:" (count jobs'))
+        (doseq [job jobs']
+          (do
+            (log/info "Job name:" (:name job))
+            (log/info " - task definition:" (:task-definition job))
+            (log/info " - command:" (:command job))
+            (log/info " - status:" (:status job))
+            (when (:reason job)
+              (log/info " - reason:" (:reason job)))))))))
 
-      ;;(alloc/free-cluster-resources! ec2 cluster)
-      )))
+(defn allocate-resources
+  [cluster num-instances]
+  (let [ec2 (ec2/new-client default-credential-provider-chain)]
+    (alloc/allocate-cluster-resources! ec2 cluster num-instances ec2/default-spot-instance-request)))
+
+(defn free-resources
+  [cluster]
+  (let [ec2 (ec2/new-client default-credential-provider-chain)]
+      (alloc/free-cluster-resources! ec2 cluster)))
 
 (def cli-options
   [["-i" "--inference" "Run inference on ECS Cluster"]
+   ["-f" "--free-resources" "Free all AWS resources"]
+   ["-a" "--allocate-resources" "Allocate AWS resources"]
    ["-c" "--cluster" "EC2 Container Service cluster name"
     :default "distributo"]
    ["-n" "--num-instances COUNT" "Number of EC2 instances to launch"
@@ -73,6 +92,9 @@
   [& args]
   (let [{:keys [options arguments errors summary]} (cli/parse-opts args cli-options)]
     (cond
+      (:allocate-resources options) (allocate-resources (:cluster options)
+                                                        (:num-instances options))
+      (:free-resources options) (free-resources (:cluster options))
       (:inference options) (run-inference (:cluster options)
                                           (:num-instances options)
                                           (:batch-size options)

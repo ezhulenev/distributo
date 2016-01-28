@@ -25,13 +25,13 @@
           :ap-southeast-2 "ami-43547120"})
 
 (def default-launch-specification {:region            :us-east-1
-                                   :availability-zone :us-east-1d ;; it's cheapest one in us-east-1
+                                   :availability-zone :us-east-1d ;; it tends to be cheapest one in us-east-1
                                    :instance-type     :m4.large
                                    :security-group    "default"
                                    :iam-role          "ecsInstanceRole"
                                    :key-name          "default"})
 
-(def default-spot-instance-request {:spot-price 0.02
+(def default-spot-instance-request {:spot-price 0.03
                                     :count 1
                                     :launch-specification default-launch-specification})
 
@@ -47,6 +47,7 @@
         fault (-> req (.getFault))
         fault-code (when fault (-> fault (.getCode)))
         instance-type (-> req (.getLaunchSpecification) (.getInstanceType) (keyword))
+        availability-zone (-> req (.getLaunchSpecification) (.getPlacement) (.getAvailabilityZone) (keyword))
         instance-id (-> req (.getInstanceId))]
     (remove-nil-values
       {:spot-instance-request-id spot-instance-request-id
@@ -56,6 +57,7 @@
        :status                   status
        :fault                    fault-code
        :instance-type            instance-type
+       :availability-zone        availability-zone
        :instance-id              instance-id})))
 
 (defn cancelled-spot-instance-request->map

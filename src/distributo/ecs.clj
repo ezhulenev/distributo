@@ -253,14 +253,15 @@
   [^AmazonECSClient client cluster tasks-arns]
   (log/debug "Describe tasks in cluster:" cluster
              "Tasks:" (vec tasks-arns))
-  (let [ecs-request (-> (DescribeTasksRequest.)
-                        (.withCluster cluster)
-                        (.withTasks tasks-arns))
-        ecs-response (-> client (.describeTasks ecs-request))
-        tasks (-> ecs-response (.getTasks))
-        failures (-> ecs-response (.getFailures))]
-    {:tasks    (mapv task->map tasks)
-     :failures (mapv #(failure->map % :task-arn) failures)}))
+  (when (seq tasks-arns)
+    (let [ecs-request (-> (DescribeTasksRequest.)
+                          (.withCluster cluster)
+                          (.withTasks tasks-arns))
+          ecs-response (-> client (.describeTasks ecs-request))
+          tasks (-> ecs-response (.getTasks))
+          failures (-> ecs-response (.getFailures))]
+      {:tasks    (mapv task->map tasks)
+       :failures (mapv #(failure->map % :task-arn) failures)})))
 
 (defn start-task!
   [^AmazonECSClient client cluster container-instance-arn task-definition command]
