@@ -34,9 +34,7 @@ This project is written in Clojure and use [Leiningen](http://leiningen.org/) bu
 
 ### TensorFlow Docker Image
 
-[specter.cljx](https://github.com/nathanmarz/specter/blob/master/src/clj/com/rpl/specter.cljx)
-
-[Docker image](/blob/master/example/docker-tensorflow/Dockerfile) based on official TensorFlow Docker image 
+[Docker image](https://github.com/ezhulenev/distributo/tree/master/example/docker-tensorflow) based on official TensorFlow Docker image 
 and [Image Recognition Tutorial](https://www.tensorflow.org/versions/0.6.0/tutorials/image_recognition/index.html).
 
 It takes 2 arguments: 
