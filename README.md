@@ -61,8 +61,8 @@ After that you can start you cluster and run TensorFlow inference with this comm
     lein run --inference \
       --num-instances 1 \
       --batch-size 100 \
-       --num-batches 10 \
-       --output s3://distributo-example/imagenet/
+      --num-batches 10 \
+      --output s3://distributo-example/imagenet/
        
 Distributo doesn't free resources after it's done with inference, to be able to do multiple runs
 one by one. If you are done, don't forget to clean resources:
