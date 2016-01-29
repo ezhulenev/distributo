@@ -1,6 +1,6 @@
 # Distributo
 
-[![Build Status](https://travis-ci.org/collectivemedia/spark-ext.svg?branch=master)](https://travis-ci.org/collectivemedia/spark-ext)
+[![Build Status](https://travis-ci.org/ezhulenev/distributo.svg?branch=master)](https://travis-ci.org/ezhulenev/distributo)
 
 Resource allocator and scheduler for running Dockerized jobs on top of Amazon EC2 Container Service 
 cluster using EC2 Spot Instances.
