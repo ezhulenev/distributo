@@ -36,8 +36,8 @@
     ;; Allocate EC2 resources on Spot Market
     (alloc/allocate-cluster-resources! ec2 cluster num-instances ec2/default-spot-instance-request)
 
-    ;; Await for at least one request fulfilled
-    (alloc/await-fulfillment ec2 cluster 1)
+    ;; Await for at least one request fulfilled for 5 minutes
+    (alloc/await-fulfillment ec2 cluster 1 {:fulfill-timeout (* 1000 60 5)})
 
     (let [batches (for [i (range num-batches)] [(* i batch-size) (* (+ 1 i) batch-size)])
           jobs (for [[start end] batches]
