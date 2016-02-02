@@ -8,6 +8,9 @@ cluster using EC2 Spot Instances.
 This project is not even alpha version, it's just a proof of concept with example showing
 how to run with it Deep Learning with TensorFlow using cheap EC2 spot instances as computation resource.
 
+**Blog Post:** [Large scale Deep Learning with TensorFlow on EC2 Spot Instances
+](http://eugenezhulenev.com/blog/2016/02/01/deep-learning-with-tensorflow-on-ec2-spot-instances/)
+
 # Overview
 
 ### Resource Allocator
